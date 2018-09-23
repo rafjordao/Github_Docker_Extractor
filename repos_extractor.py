@@ -40,7 +40,12 @@ with open("./resources/tokens.txt",'r',encoding='utf-8') as tokenFile:
 def repoExtractGit(id,repoName,token,resultQueue=None):
     g = Github(token)
     print(repoName)
-    repo = g.get_repo(repoName,lazy=False)
+    try :
+        repo = g.get_repo(repoName,lazy=False)
+    except InvalidURL :
+        organization = repoName.split('/')
+        repo = g.get_organization(organization[0])
+        repo = repo.get_repo(organization[1])
     print(repo)
     repoQuery = mongoRepos.find_one({"name":repoName}) 
     repoId = None
