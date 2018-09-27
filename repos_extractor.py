@@ -39,18 +39,19 @@ with open("./resources/tokens.txt",'r',encoding='utf-8') as tokenFile:
 
 def repoExtractGit(id,repoName,token,resultQueue=None):
     g = Github(token)
-    print(repoName)
-    try :
-        repo = g.get_repo(repoName,lazy=False)
-    except InvalidURL :
-        organization = repoName.split('/')
-        repo = g.get_organization(organization[0])
-        repo = repo.get_repo(organization[1])
-    print(repo)
-    repoQuery = mongoRepos.find_one({"name":repoName}) 
     repoId = None
+    repoQuery = mongoRepos.find_one({"name":repoName}) 
     if(repoQuery is None):
-        repoId = mongoRepoInsert(repoName,repo)
+        urlRepo = "https://github.com/"+repoName
+        pageRepo = rq.get(urlRepo,headers=headers)
+        if(not pageRepo.status_code == 404):
+            path = re.sub('https://github.com/','',pageRepo.url)
+            repo = g.get_repo(path)
+            if(repoName!=path):
+                repoName=path
+            repoId = mongoRepoInsert(repoName,repo)
+        else:
+            print("Repositório Inexistente")
     else:
         print("Repositorio ja cadastrado!")
     resultQueue.put((id,"done"))
@@ -58,8 +59,8 @@ def repoExtractGit(id,repoName,token,resultQueue=None):
     return repoId
 
 def mongoRepoInsert(repoName,g):
-    urlRepo = "https://github.com/"+repoName+"/tree/master"
-    urlReadme = "https://raw.githubusercontent.com/"+repoName+"/master/README.md"
+    urlRepo = "https://github.com/"+repoName+"/tree/"+g.default_branch
+    urlReadme = "https://raw.githubusercontent.com/"+repoName+"/"+g.default_branch+"/README.md"
     pageRepo = rq.get(urlRepo,headers=headers)
     pageReadme = rq.get(urlReadme,headers=headers)
     infos={}
@@ -75,18 +76,21 @@ def mongoRepoInsert(repoName,g):
     infos["watchers"] = int(g.watchers_count)
     infos["stars"] = int(g.stargazers_count)
     infos["forks"] = int(g.forks_count)
-    infos["commits"] = getTotalByApi(bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(1) > a > span'),repoName,"commits")
-    infos["branches"] = getTotalByApi(bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(2) > a > span'),repoName,"branches")
-    infos["releases"] = getTotalByApi(bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(3) > a > span'),repoName,"releases")
-    repoLicense = bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(5)')
-    if not repoLicense:
-        repoLicense=None
-    else:
-        repoLicense = repoLicense[0].text.strip()
+    if(not pageRepo.status_code==404):
+        infos["commits"] = getTotalByApi(bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(1) > a > span'),repoName,"commits")
+        infos["branches"] = getTotalByApi(bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(2) > a > span'),repoName,"branches")
+        infos["releases"] = getTotalByApi(bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(3) > a > span'),repoName,"releases")
+        repoLicense = bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(5)')
+        if not repoLicense:
+            repoLicense=None
+        else:
+            repoLicense = repoLicense[0].text.strip()
+    else :
+        return None
     infos["license"] = repoLicense
     forkedFrom = None
     if(g.fork):
-        forkedFrom = mongoRepoInsert(repoName,g.parent)
+        forkedFrom = mongoRepoInsert(g.parent.full_name,g.parent)
     infos["forked_from"] = forkedFrom
     infos["readme"] = BeautifulSoup(pageReadme.text,"html.parser").text
     infos["url"] = urlRepo
@@ -96,12 +100,15 @@ def mongoRepoInsert(repoName,g):
 
 def getTotalByApi(bs,repoName,item):
     if(bs == None):
-        url = "https://api.github.com/repos/"+repoName+"/"+item+"?per_page=1"
-        response = rq.get(url,headers=headers)
-        link = response.info().get('Link')
-        return int(re.match('.*=(.*)>; rel="last"',link).group(1))
+        return getLastPagination(repoName,item)
     else:
         return int(re.sub(',','',bs[0].text.strip()))
+
+def getLastPagination(repoName,item):
+    url = "https://api.github.com/repos/"+repoName+"/"+item+"?per_page=1"
+    response = rq.get(url,headers=headers)
+    link = response.info().get('Link')
+    return int(re.match('.*=(.*)>; rel="last"',link).group(1))
 
 # def repoExtract(id,repoName,resultQueue=None):
 #     if(id!=0):
@@ -178,8 +185,8 @@ def getTotalByApi(bs,repoName,item):
 
 t=[]
 q = queue.Queue()
-initialId=1
-threadsNumber=2
+initialId=14607
+threadsNumber=len(tokens)*2
 tokenQtd=len(tokens)
 print("Iniciando com id "+str(initialId))
 for i in range(initialId,len(results)+1):
