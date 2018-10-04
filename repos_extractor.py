@@ -16,6 +16,8 @@ import yaml
 import json
 import queue
 
+from datetime import datetime
+
 from github import Github, GithubException
 
 print("Executando scrapper...")
@@ -40,62 +42,84 @@ with open("./resources/tokens.txt",'r',encoding='utf-8') as tokenFile:
 def repoExtractGit(id,repoName,token,resultQueue=None):
     g = Github(token)
     repoId = None
-    repoQuery = mongoRepos.find_one({"name":repoName}) 
-    if(repoQuery is None):
-        urlRepo = "https://github.com/"+repoName
-        pageRepo = rq.get(urlRepo,headers=headers)
-        if(not pageRepo.status_code == 404):
-            path = re.sub('https://github.com/','',pageRepo.url)
-            repo = g.get_repo(path)
-            if(repoName!=path):
-                repoName=path
-            repoId = mongoRepoInsert(repoName,repo)
+    repoQuery = mongoRepos.find_one({"name":repoName})
+    try:
+        if(repoQuery is None):
+            urlRepo = "https://github.com/"+repoName
+            pageRepo = rq.get(urlRepo,headers=headers)
+            if(not pageRepo.status_code == 404):
+                path = re.sub('https://github.com/','',pageRepo.url)
+                repo = g.get_repo(path)
+                if(repoName!=path):
+                    repoName=path
+                repoId = mongoRepoInsert(repoName,repo)
+            else:
+                print("Repositório Inexistente")
         else:
-            print("Repositório Inexistente")
-    else:
-        print("Repositorio ja cadastrado!")
-    resultQueue.put((id,"done"))
-    print("Sai do Thread "+str(id))
+            print("Repositorio ja cadastrado!")
+        resultQueue.put((id,"done"))
+        print("Sai do Thread "+str(id))
+        return repoId
+    except rq.exceptions.ReadTimeout:
+        print("ReadTimeout, tentando novamente")
+        return repoExtractGit(id,repoName,token,resultQueue)
+    except GithubException as e:
+        print("Ocorreu um erro na requisição do github : "+e.data['message'])
+        resultQueue.put((id,"done"))
+        print("Sai do Thread "+str(id))
+    except rq.exceptions.ConnectionError:
+        print("ConnectionErro, tentando novamente")
+        return repoExtractGit(id,repoName,token,resultQueue)
     return repoId
 
 def mongoRepoInsert(repoName,g):
-    urlRepo = "https://github.com/"+repoName+"/tree/"+g.default_branch
-    urlReadme = "https://raw.githubusercontent.com/"+repoName+"/"+g.default_branch+"/README.md"
-    pageRepo = rq.get(urlRepo,headers=headers)
-    pageReadme = rq.get(urlReadme,headers=headers)
-    infos={}
-    bsRepo = BeautifulSoup(pageRepo.text,"html.parser")
-    language = bsRepo.find("ol",attrs={'class':'repository-lang-stats-numbers'})
-    if(language!=None):
-        languages = language.find_all("a")
-        language = {}
-        for l in languages:
-            language[l.find("span",attrs={'class':'lang'}).text]=float(re.sub('%','',l.find("span",attrs={'class':'percent'}).text))/100
-        language=dict(language)
-    infos["languagues"]=language
-    infos["watchers"] = int(g.watchers_count)
-    infos["stars"] = int(g.stargazers_count)
-    infos["forks"] = int(g.forks_count)
-    if(not pageRepo.status_code==404):
-        infos["commits"] = getTotalByApi(bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(1) > a > span'),repoName,"commits")
-        infos["branches"] = getTotalByApi(bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(2) > a > span'),repoName,"branches")
-        infos["releases"] = getTotalByApi(bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(3) > a > span'),repoName,"releases")
-        repoLicense = bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(5)')
-        if not repoLicense:
-            repoLicense=None
-        else:
-            repoLicense = repoLicense[0].text.strip()
-    else :
-        return None
-    infos["license"] = repoLicense
-    forkedFrom = None
-    if(g.fork):
-        forkedFrom = mongoRepoInsert(g.parent.full_name,g.parent)
-    infos["forked_from"] = forkedFrom
-    infos["readme"] = BeautifulSoup(pageReadme.text,"html.parser").text
-    infos["url"] = urlRepo
-    infos["name"] = repoName
-    return mongoRepos.insert_one(infos).inserted_id
+    try:
+        urlRepo = "https://github.com/"+repoName+"/tree/"+g.default_branch
+        urlReadme = "https://raw.githubusercontent.com/"+repoName+"/"+g.default_branch+"/README.md"
+        pageRepo = rq.get(urlRepo,headers=headers)
+        pageReadme = rq.get(urlReadme,headers=headers)
+        infos={}
+        bsRepo = BeautifulSoup(pageRepo.text,"html.parser")
+        language = bsRepo.find("ol",attrs={'class':'repository-lang-stats-numbers'})
+        if(language!=None):
+            languages = language.find_all("a")
+            language = {}
+            for l in languages:
+                language[l.find("span",attrs={'class':'lang'}).text]=float(re.sub('%','',l.find("span",attrs={'class':'percent'}).text))/100
+            language=dict(language)
+        infos["languagues"]=language
+        infos["watchers"] = int(g.watchers_count)
+        infos["stars"] = int(g.stargazers_count)
+        infos["forks"] = int(g.forks_count)
+        infos["created_at"] = g.created_at
+        infos["updated_at"] = g.updated_at
+        infos["default_branch"] = g.default_branch
+        if(not pageRepo.status_code==404 and not bsRepo.find('div',attrs={'class':'blankslate blankslate-narrow'})):
+            infos["commits"] = getTotalByApi(bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(1) > a > span'),repoName,"commits")
+            infos["branches"] = getTotalByApi(bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(2) > a > span'),repoName,"branches")
+            infos["releases"] = getTotalByApi(bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(3) > a > span'),repoName,"releases")
+            repoLicense = bsRepo.find("ul",attrs={"class":'numbers-summary'}).select('li:nth-of-type(5)')
+            if not repoLicense:
+                repoLicense=None
+            else:
+                repoLicense = repoLicense[0].text.strip()
+        else :
+            return None
+        infos["license"] = repoLicense
+        forkedFrom = None
+        if(g.fork and mongoRepos.find_one({"name":g.parent.full_name})):
+            forkedFrom = mongoRepos.find_one({"name":g.parent.full_name})
+        elif(g.fork):
+            print(g.parent.full_name)
+            forkedFrom = mongoRepoInsert(g.parent.full_name,g.parent)
+        infos["forked_from"] = forkedFrom
+        infos["readme"] = BeautifulSoup(pageReadme.text,"html.parser").text
+        infos["url"] = urlRepo
+        infos["name"] = repoName
+        return mongoRepos.insert_one(infos).inserted_id
+    except rq.exceptions.ConnectionError:
+        print("ConnectionErro, tentando novamente")
+        return mongoRepoInsert(repoName,g)
 
 
 def getTotalByApi(bs,repoName,item):
@@ -185,8 +209,8 @@ def getLastPagination(repoName,item):
 
 t=[]
 q = queue.Queue()
-initialId=14607
-threadsNumber=len(tokens)*2
+initialId=85480
+threadsNumber=len(tokens)*6
 tokenQtd=len(tokens)
 print("Iniciando com id "+str(initialId))
 for i in range(initialId,len(results)+1):
