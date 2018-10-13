@@ -95,8 +95,8 @@ def repoExtract(id,repoName,resultQueue):
 
 t=[]
 q = queue.Queue()
-initialId=407971
-threadsNumber=60
+initialId=187301
+threadsNumber=400
 print("Iniciando com id "+str(initialId))
 for i in range(initialId,10394748):
     t.append(threading.Thread(target=dockercomposeExtractor,args=(i,results[i][1],q,)))
