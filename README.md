@@ -7,4 +7,4 @@ Este repositório possui os scripts de extração utilizados para obtenção dos
 
 O seguinte link dá acesso ao Download da base de dados criada após a extração:
 
-    [Dump do Mongo](https://drive.google.com/drive/folders/1F-t83WdC8_0ktDZQcdo2GcVxvZsgQgpy?usp=sharing)
+[Dump do Mongo](https://drive.google.com/drive/folders/1F-t83WdC8_0ktDZQcdo2GcVxvZsgQgpy?usp=sharing)
